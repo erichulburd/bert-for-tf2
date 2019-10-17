@@ -5,7 +5,6 @@
 
 from __future__ import absolute_import, division, print_function
 
-
 import os
 
 import numpy as np
@@ -34,7 +33,8 @@ class TestAdapterFineTuning(AbstractBertTest):
         # build a dummy bert
         self.ckpt_path = MiniBertFactory.create_mini_bert_weights()
         self.ckpt_dir = os.path.dirname(self.ckpt_path)
-        self.tokenizer = bert.FullTokenizer(vocab_file=os.path.join(self.ckpt_dir, "vocab.txt"), do_lower_case=True)
+        self.tokenizer = bert.FullTokenizer(vocab_file=os.path.join(self.ckpt_dir, "vocab.txt"),
+                                            do_lower_case=True)
 
     def test_coverage_improve(self):
         bert_params = bert.params_from_pretrained_ckpt(self.ckpt_dir)
@@ -80,7 +80,7 @@ class TestAdapterFineTuning(AbstractBertTest):
         model.summary()
 
         kernel_regularizer = keras.regularizers.l2(0.01)
-        bias_regularizer   = keras.regularizers.l2(0.01)
+        bias_regularizer = keras.regularizers.l2(0.01)
 
         pf.utils.add_dense_layer_loss(model,
                                       kernel_regularizer=kernel_regularizer,
@@ -89,7 +89,7 @@ class TestAdapterFineTuning(AbstractBertTest):
         inputs, targets = ["hello world", "goodbye"], [1, 2]
         tokens = [self.tokenizer.tokenize(toks) for toks in inputs]
         tokens = [self.tokenizer.convert_tokens_to_ids(toks) for toks in tokens]
-        tokens = [toks + [0]*(max_seq_len - len(toks)) for toks in tokens]
+        tokens = [toks + [0] * (max_seq_len - len(toks)) for toks in tokens]
         x = np.array(tokens)
         y = np.array(targets)
         # fine tune
@@ -115,7 +115,7 @@ class TestAdapterFineTuning(AbstractBertTest):
         inputs, targets = ["hello world", "goodbye"], [1, 2]
         tokens = [self.tokenizer.tokenize(toks) for toks in inputs]
         tokens = [self.tokenizer.convert_tokens_to_ids(toks) for toks in tokens]
-        tokens = [toks + [0]*(max_seq_len - len(toks)) for toks in tokens]
+        tokens = [toks + [0] * (max_seq_len - len(toks)) for toks in tokens]
         x = np.array(tokens)
         y = np.array(targets)
 

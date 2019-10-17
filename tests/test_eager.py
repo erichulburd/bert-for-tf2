@@ -5,7 +5,6 @@
 
 from __future__ import absolute_import, division, print_function
 
-
 import numpy as np
 import tensorflow as tf
 from tensorflow import keras
@@ -17,7 +16,6 @@ from .test_common import AbstractBertTest
 
 
 class LoaderTest(AbstractBertTest):
-
     def setUp(self) -> None:
         tf.compat.v1.reset_default_graph()
         tf.compat.v1.enable_eager_execution()
@@ -42,8 +40,7 @@ class LoaderTest(AbstractBertTest):
         bert = BertModelLayer.from_params(bert_params, name="bert")
 
         model = keras.models.Sequential([
-            keras.layers.InputLayer(input_shape=(128,)),
-            bert,
+            keras.layers.InputLayer(input_shape=(128, )), bert,
             keras.layers.Lambda(lambda x: x[:, 0, :]),
             keras.layers.Dense(2)
         ])
@@ -68,20 +65,17 @@ class LoaderTest(AbstractBertTest):
         max_seq_len = 4
 
         model = keras.models.Sequential([
-            keras.layers.InputLayer(input_shape=(max_seq_len,)),
+            keras.layers.InputLayer(input_shape=(max_seq_len, )),
             bert,
             keras.layers.TimeDistributed(keras.layers.Dense(bert_params.hidden_size)),
             keras.layers.TimeDistributed(keras.layers.LayerNormalization()),
             keras.layers.TimeDistributed(keras.layers.Activation("tanh")),
-
             pf.Concat([
                 keras.layers.Lambda(lambda x: tf.math.reduce_max(x, axis=1)),  # GlobalMaxPooling1D
                 keras.layers.Lambda(lambda x: tf.math.reduce_mean(x, axis=1)),  # GlobalAvgPooling1
             ]),
-
             keras.layers.Dense(units=bert_params.hidden_size),
             keras.layers.Activation("tanh"),
-
             keras.layers.Dense(units=2)
         ])
 
@@ -91,7 +85,7 @@ class LoaderTest(AbstractBertTest):
         model.compile(optimizer=keras.optimizers.Adam(),
                       loss=[keras.losses.SparseCategoricalCrossentropy(from_logits=True)],
                       metrics=[keras.metrics.SparseCategoricalAccuracy()],
-                      run_eagerly = True)
+                      run_eagerly=True)
 
         loader.load_stock_weights(bert, model_dir)
 

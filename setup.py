@@ -16,7 +16,6 @@ def _version():
 
 __version__ = _version()
 
-
 with open("README.rst", "r") as fh:
     long_description = fh.read()
 
@@ -31,21 +30,17 @@ setup(name="bert-for-tf2",
       long_description_content_type="text/x-rst",
       keywords="tensorflow keras bert",
       license="MIT",
-
       author="kpe",
       author_email="kpe.git@gmailbox.org",
       packages=find_packages(exclude=["tests"]),
       package_data={"": ["*.txt", "*.rst"]},
-
       zip_safe=True,
       install_requires=install_requires,
       python_requires=">=3.6",
       classifiers=[
-          "Development Status :: 5 - Production/Stable",
-          "License :: OSI Approved :: MIT License",
-          "Programming Language :: Python",
-          "Programming Language :: Python :: 3",
-          "Programming Language :: Python :: 3.6",
-          "Programming Language :: Python :: 3.7",
+          "Development Status :: 5 - Production/Stable", "License :: OSI Approved :: MIT License",
+          "Programming Language :: Python", "Programming Language :: Python :: 3",
+          "Programming Language :: Python :: 3.6", "Programming Language :: Python :: 3.7",
           "Programming Language :: Python :: Implementation :: CPython",
-          "Programming Language :: Python :: Implementation :: PyPy"])
+          "Programming Language :: Python :: Implementation :: PyPy"
+      ])

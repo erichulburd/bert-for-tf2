@@ -5,7 +5,6 @@
 
 from __future__ import division, absolute_import, print_function
 
-
 import unittest
 
 import os
@@ -21,7 +20,6 @@ from .test_common import AbstractBertTest, MiniBertFactory
 
 
 class AdapterFreezeTest(AbstractBertTest):
-
     def setUp(self) -> None:
         tf.compat.v1.reset_default_graph()
         tf.compat.v1.enable_eager_execution()
@@ -39,7 +37,7 @@ class AdapterFreezeTest(AbstractBertTest):
         def to_model(bert_params):
             l_bert = bert.BertModelLayer.from_params(bert_params)
 
-            token_ids = keras.layers.Input(shape=(21,))
+            token_ids = keras.layers.Input(shape=(21, ))
             seq_out = l_bert(token_ids)
             model = keras.Model(inputs=[token_ids], outputs=seq_out)
 
@@ -68,15 +66,17 @@ class AdapterFreezeTest(AbstractBertTest):
         model_dir = tempfile.TemporaryDirectory().name
         os.makedirs(model_dir)
         save_path = MiniBertFactory.create_mini_bert_weights(model_dir)
-        tokenizer = bert.FullTokenizer(vocab_file=os.path.join(model_dir, "vocab.txt"), do_lower_case=True)
+        tokenizer = bert.FullTokenizer(vocab_file=os.path.join(model_dir, "vocab.txt"),
+                                       do_lower_case=True)
 
         # prepare input
-        max_seq_len  = 24
-        input_str_batch    = ["hello, bert!", "how are you doing!"]
+        max_seq_len = 24
+        input_str_batch = ["hello, bert!", "how are you doing!"]
 
-        input_ids, token_type_ids = self.prepare_input_batch(input_str_batch, tokenizer, max_seq_len)
+        input_ids, token_type_ids = self.prepare_input_batch(input_str_batch, tokenizer,
+                                                             max_seq_len)
 
-        bert_ckpt_file   = os.path.join(model_dir, "bert_model.ckpt")
+        bert_ckpt_file = os.path.join(model_dir, "bert_model.ckpt")
 
         bert_params = bert.params_from_pretrained_ckpt(model_dir)
         bert_params.adapter_size = 4
@@ -106,19 +106,10 @@ class AdapterFreezeTest(AbstractBertTest):
                       run_eagerly=True)
 
         orig_pred = model.predict(input_ids)
-        model.fit(x=input_ids, y=np.zeros_like(orig_pred),
-          batch_size=2,
-          epochs=4)
+        model.fit(x=input_ids, y=np.zeros_like(orig_pred), batch_size=2, epochs=4)
 
         for ndx, weight in enumerate(l_bert.weights):
-            print("{}: {}".format(
-                    np.array_equal(weight.numpy(), orig_weight_values[ndx]),
-                    weight.name))
+            print("{}: {}".format(np.array_equal(weight.numpy(), orig_weight_values[ndx]),
+                                  weight.name))
 
         model.summary()
-
-
-
-
-
-

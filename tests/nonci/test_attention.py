@@ -5,25 +5,21 @@
 
 from __future__ import absolute_import, division, print_function
 
-
 import unittest
 
 import random
 import numpy as np
-
 
 import tensorflow as tf
 from tensorflow.python import keras
 
 from bert.attention import AttentionLayer
 
-
 # tf.enable_v2_behavior()
 # tf.enable_eager_execution()
 
 
 class MaskFlatten(keras.layers.Flatten):
-
     def __init__(self, **kwargs):
         self.supports_masking = True
         super(MaskFlatten, self).__init__(**kwargs)
@@ -33,9 +29,8 @@ class MaskFlatten(keras.layers.Flatten):
 
 
 class BertAttentionTest(unittest.TestCase):
-
     @staticmethod
-    def data_generator(batch_size=32, max_len=10):             # ([batch_size, 10], [10])
+    def data_generator(batch_size=32, max_len=10):  # ([batch_size, 10], [10])
         while True:
             data = np.zeros((batch_size, max_len))
             tag = np.zeros(batch_size, dtype='int32')
@@ -62,7 +57,7 @@ class BertAttentionTest(unittest.TestCase):
                 super(AModel, self).__init__(**kwargs)
                 self.embedding = keras.layers.Embedding(input_dim=5, output_dim=3, mask_zero=True)
                 self.attention = AttentionLayer(num_heads=5, size_per_head=3)
-                self.timedist  = keras.layers.TimeDistributed(MaskFlatten())
+                self.timedist = keras.layers.TimeDistributed(MaskFlatten())
                 self.bigru = keras.layers.Bidirectional(keras.layers.GRU(units=8))
                 self.softmax = keras.layers.Dense(units=2, activation="softmax")
 
@@ -102,6 +97,7 @@ class BertAttentionTest(unittest.TestCase):
             validation_data=self.data_generator(8, max_seq_len),
             validation_steps=10,
             callbacks=[
-                keras.callbacks.EarlyStopping(monitor='val_sparse_categorical_accuracy', patience=5),
+                keras.callbacks.EarlyStopping(monitor='val_sparse_categorical_accuracy',
+                                              patience=5),
             ],
         )

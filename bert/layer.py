@@ -13,6 +13,7 @@ from params_flow.activations import gelu
 
 class Layer(pf.Layer):
     """ Common abstract base layer for all BERT layers. """
+
     class Params(pf.Layer.Params):
         initializer_range = 0.02
 

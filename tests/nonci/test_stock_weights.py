@@ -5,8 +5,6 @@
 
 from __future__ import absolute_import, division, print_function
 
-
-
 import unittest
 import math
 
@@ -46,13 +44,15 @@ def create_learning_rate_scheduler(max_learn_rate=5e-5,
                                    end_learn_rate=1e-7,
                                    warmup_epoch_count=10,
                                    total_epoch_count=90):
-
     def lr_scheduler(epoch):
         if epoch < warmup_epoch_count:
-            res = (max_learn_rate/warmup_epoch_count) * (epoch + 1)
+            res = (max_learn_rate / warmup_epoch_count) * (epoch + 1)
         else:
-            res = max_learn_rate*math.exp(math.log(end_learn_rate/max_learn_rate)*(epoch-warmup_epoch_count+1)/(total_epoch_count-warmup_epoch_count+1))
+            res = max_learn_rate * math.exp(
+                math.log(end_learn_rate / max_learn_rate) * (epoch - warmup_epoch_count + 1) /
+                (total_epoch_count - warmup_epoch_count + 1))
         return float(res)
+
     learning_rate_scheduler = tf.keras.callbacks.LearningRateScheduler(lr_scheduler, verbose=1)
 
     return learning_rate_scheduler
@@ -71,8 +71,7 @@ class TestWeightsLoading(unittest.TestCase):
         bert = BertModelLayer.from_params(bert_params, name="bert")
 
         model = keras.models.Sequential([
-            keras.layers.InputLayer(input_shape=(128,)),
-            bert,
+            keras.layers.InputLayer(input_shape=(128, )), bert,
             keras.layers.Lambda(lambda x: x[:, 0, :]),
             keras.layers.Dense(2)
         ])
@@ -83,11 +82,9 @@ class TestWeightsLoading(unittest.TestCase):
 
         model.build(input_shape=(None, 128))
         model.compile(optimizer=keras.optimizers.Adam(),
-            loss=keras.losses.SparseCategoricalCrossentropy(from_logits=True),
-            metrics=[keras.metrics.SparseCategoricalAccuracy(name="acc")])
+                      loss=keras.losses.SparseCategoricalCrossentropy(from_logits=True),
+                      metrics=[keras.metrics.SparseCategoricalAccuracy(name="acc")])
 
         load_stock_weights(bert, self.bert_ckpt_file)
 
         model.summary()
-
-

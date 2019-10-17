@@ -19,29 +19,28 @@ from .test_common import AbstractBertTest, MiniBertFactory
 
 
 class AlbertTest(AbstractBertTest):
-
     def setUp(self) -> None:
         tf.compat.v1.reset_default_graph()
         tf.compat.v1.enable_eager_execution()
         print("Eager Execution:", tf.executing_eagerly())
 
     def test_albert(self):
-        bert_params = bert.BertModelLayer.Params(hidden_size=32,
-                                                 vocab_size=67,
-                                                 max_position_embeddings=64,
-                                                 num_layers=1,
-                                                 num_heads=1,
-                                                 intermediate_size=4,
-                                                 use_token_type=False,
-
-                                                 embedding_size=16,  # using ALBERT instead of BERT
-                                                 shared_layer=True,
-                                                 )
+        bert_params = bert.BertModelLayer.Params(
+            hidden_size=32,
+            vocab_size=67,
+            max_position_embeddings=64,
+            num_layers=1,
+            num_heads=1,
+            intermediate_size=4,
+            use_token_type=False,
+            embedding_size=16,  # using ALBERT instead of BERT
+            shared_layer=True,
+        )
 
         def to_model(bert_params):
             l_bert = bert.BertModelLayer.from_params(bert_params)
 
-            token_ids = keras.layers.Input(shape=(21,))
+            token_ids = keras.layers.Input(shape=(21, ))
             seq_out = l_bert(token_ids)
             model = keras.Model(inputs=[token_ids], outputs=seq_out)
 

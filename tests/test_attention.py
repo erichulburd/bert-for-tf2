@@ -5,7 +5,6 @@
 
 from __future__ import absolute_import, division, print_function
 
-
 import unittest
 
 import random
@@ -18,11 +17,11 @@ from tensorflow import keras
 
 
 class TestAttention(unittest.TestCase):
-
     def test_attention(self):
-        am = bert.AttentionLayer.create_attention_mask(from_shape=[2, 3, 5],   # B,S,..
-                                                       input_mask=[[2], [1]]   # B,seq_len
-                                                       )
+        am = bert.AttentionLayer.create_attention_mask(
+            from_shape=[2, 3, 5],  # B,S,..
+            input_mask=[[2], [1]]  # B,seq_len
+        )
         print(am)  # [batch_size, from_seq_len, seq_len]
 
     def test_compute_shape(self):

@@ -25,16 +25,15 @@ class TestAlbertLoadWeights(unittest.TestCase):
         l_bert = bert.BertModelLayer.from_params(bert_params, name="bert")
 
         model = keras.models.Sequential([
-            keras.layers.InputLayer(input_shape=(128,)),
-            l_bert,
+            keras.layers.InputLayer(input_shape=(128, )), l_bert,
             keras.layers.Lambda(lambda x: x[:, 0, :]),
             keras.layers.Dense(2)
         ])
 
         model.build(input_shape=(None, 128))
         model.compile(optimizer=keras.optimizers.Adam(),
-            loss=keras.losses.SparseCategoricalCrossentropy(from_logits=True),
-            metrics=[keras.metrics.SparseCategoricalAccuracy(name="acc")])
+                      loss=keras.losses.SparseCategoricalCrossentropy(from_logits=True),
+                      metrics=[keras.metrics.SparseCategoricalAccuracy(name="acc")])
 
         for weight in l_bert.weights:
             print(weight.name)

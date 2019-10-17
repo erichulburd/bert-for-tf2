@@ -24,7 +24,6 @@ from .test_common import AbstractBertTest, MiniBertFactory
 
 
 class TestExtendSegmentVocab(AbstractBertTest):
-
     def setUp(self) -> None:
         tf.compat.v1.reset_default_graph()
         tf.compat.v1.enable_eager_execution()
@@ -35,7 +34,8 @@ class TestExtendSegmentVocab(AbstractBertTest):
         model_dir = tempfile.TemporaryDirectory().name
         os.makedirs(model_dir)
         save_path = MiniBertFactory.create_mini_bert_weights(model_dir)
-        tokenizer = bert.FullTokenizer(vocab_file=os.path.join(model_dir, "vocab.txt"), do_lower_case=True)
+        tokenizer = bert.FullTokenizer(vocab_file=os.path.join(model_dir, "vocab.txt"),
+                                       do_lower_case=True)
 
         ckpt_dir = os.path.dirname(save_path)
         bert_params = bert.params_from_pretrained_ckpt(ckpt_dir)
@@ -60,7 +60,8 @@ class TestExtendSegmentVocab(AbstractBertTest):
         for weight, value in mismatched:
             if re.match("(.*)embeddings/token_type_embeddings/embeddings:0", weight.name):
                 seg0_emb = value[:1, :]
-                new_segment_embeddings = np.repeat(seg0_emb, (weight.shape[0]-value.shape[0]), axis=0)
+                new_segment_embeddings = np.repeat(seg0_emb, (weight.shape[0] - value.shape[0]),
+                                                   axis=0)
                 new_value = np.concatenate([value, new_segment_embeddings], axis=0)
                 keras.backend.batch_set_value([(weight, new_value)])
 
@@ -78,5 +79,3 @@ class TestExtendSegmentVocab(AbstractBertTest):
         bert_params.token_type_vocab_size = 4
         print("token_type_vocab_size", bert_params.token_type_vocab_size)
         print(l_bert.embeddings_layer.trainable_weights[1])
-
-
