@@ -564,6 +564,7 @@ def _check_is_max_context(doc_spans, cur_span_index, position):
     return cur_span_index == best_span_index
 
 
+# TODO: Make this compatible with create_model_fn
 def create_model(max_seq_len, adapter_size=64):
     """Creates a classification model."""
 
@@ -575,9 +576,8 @@ def create_model(max_seq_len, adapter_size=64):
         bert = BertModelLayer.from_params(bert_params, name="bert")
 
     input_ids = keras.layers.Input(shape=(max_seq_len, ), dtype='int32', name="input_ids")
-    # token_type_ids = keras.layers.Input(shape=(max_seq_len,), dtype='int32', name="token_type_ids")
-    # output         = bert([input_ids, token_type_ids])
-    output = bert(input_ids)
+    token_type_ids = keras.layers.Input(shape=(max_seq_len,), dtype='int32', name="token_type_ids")
+    output = bert([input_ids, token_type_ids])
 
     print("bert shape", output.shape)
     cls_out = keras.layers.Lambda(lambda seq: seq[:, 0, :])(output)
@@ -586,10 +586,8 @@ def create_model(max_seq_len, adapter_size=64):
     logits = keras.layers.Dropout(0.5)(logits)
     logits = keras.layers.Dense(units=2, activation="softmax")(logits)
 
-    # model = keras.Model(inputs=[input_ids, token_type_ids], outputs=logits)
-    # model.build(input_shape=[(None, max_seq_len), (None, max_seq_len)])
-    model = keras.Model(inputs=input_ids, outputs=logits)
-    model.build(input_shape=(None, max_seq_len))
+    model = keras.Model(inputs=[input_ids, token_type_ids], outputs=logits)
+    model.build(input_shape=[(None, max_seq_len), (None, max_seq_len)])
 
     # load the pre-trained model weights
     load_stock_weights(bert, INIT_CHECKPOINT)
