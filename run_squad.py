@@ -304,8 +304,8 @@ def read_squad_examples(input_file, is_training):
                         cleaned_answer_text = " ".join(
                             tokenization.whitespace_tokenize(orig_answer_text))
                         if actual_text.find(cleaned_answer_text) == -1:
-                            tf.compat.v1.logging.warning("Could not find answer: '%s' vs. '%s'", actual_text,
-                                               cleaned_answer_text)
+                            tf.compat.v1.logging.warning("Could not find answer: '%s' vs. '%s'",
+                                                         actual_text, cleaned_answer_text)
                             continue
                     else:
                         start_position = -1
@@ -451,8 +451,8 @@ def convert_examples_to_features(examples, tokenizer, max_seq_length, doc_stride
                 tf.compat.v1.logging.info("unique_id: %s" % (unique_id))
                 tf.compat.v1.logging.info("example_index: %s" % (example_index))
                 tf.compat.v1.logging.info("doc_span_index: %s" % (doc_span_index))
-                tf.compat.v1.logging.info("tokens: %s" %
-                                " ".join([tokenization.printable_text(x) for x in tokens]))
+                tf.compat.v1.logging.info(
+                    "tokens: %s" % " ".join([tokenization.printable_text(x) for x in tokens]))
                 tf.compat.v1.logging.info(
                     "token_to_orig_map: %s" %
                     " ".join(["%d:%d" % (x, y) for (x, y) in six.iteritems(token_to_orig_map)]))
@@ -461,14 +461,16 @@ def convert_examples_to_features(examples, tokenizer, max_seq_length, doc_stride
                     " ".join(["%d:%s" % (x, y) for (x, y) in six.iteritems(token_is_max_context)]))
                 tf.compat.v1.logging.info("input_ids: %s" % " ".join([str(x) for x in input_ids]))
                 tf.compat.v1.logging.info("input_mask: %s" % " ".join([str(x) for x in input_mask]))
-                tf.compat.v1.logging.info("segment_ids: %s" % " ".join([str(x) for x in segment_ids]))
+                tf.compat.v1.logging.info(
+                    "segment_ids: %s" % " ".join([str(x) for x in segment_ids]))
                 if is_training and example.is_impossible:
                     tf.compat.v1.logging.info("impossible example")
                 if is_training and not example.is_impossible:
                     answer_text = " ".join(tokens[start_position:(end_position + 1)])
                     tf.compat.v1.logging.info("start_position: %d" % (start_position))
                     tf.compat.v1.logging.info("end_position: %d" % (end_position))
-                    tf.compat.v1.logging.info("answer: %s" % (tokenization.printable_text(answer_text)))
+                    tf.compat.v1.logging.info("answer: %s" %
+                                              (tokenization.printable_text(answer_text)))
 
             feature = InputFeatures(unique_id=unique_id,
                                     example_index=example_index,
@@ -645,9 +647,10 @@ def input_fn_builder(input_file, seq_length, is_training, drop_remainder):
             d = d.shuffle(buffer_size=100)
 
         d = d.apply(
-            tf.data.experimental.map_and_batch(lambda record: _decode_record(record, name_to_features),
-                                          batch_size=batch_size,
-                                          drop_remainder=drop_remainder))
+            tf.data.experimental.map_and_batch(
+                lambda record: _decode_record(record, name_to_features),
+                batch_size=batch_size,
+                drop_remainder=drop_remainder))
 
         return d
 
@@ -897,8 +900,8 @@ def get_final_text(pred_text, orig_text, do_lower_case):
 
     if len(orig_ns_text) != len(tok_ns_text):
         if FLAGS.verbose_logging:
-            tf.compat.v1.logging.info("Length not equal after stripping spaces: '%s' vs '%s'", orig_ns_text,
-                            tok_ns_text)
+            tf.compat.v1.logging.info(
+                "Length not equal after stripping spaces: '%s' vs '%s'", orig_ns_text, tok_ns_text)
         return orig_text
 
     # We then project the characters in `pred_text` back to `orig_text` using
@@ -1174,7 +1177,8 @@ def model_fn_builder(bert_config, init_checkpoint, learning_rate, num_train_step
         def compute_loss(logits, positions):
             one_hot_positions = tf.one_hot(positions, depth=seq_length, dtype=tf.float32)
             log_probs = tf.nn.log_softmax(logits, axis=-1)
-            loss = -tf.reduce_mean(input_tensor=tf.reduce_sum(input_tensor=one_hot_positions * log_probs, axis=-1))
+            loss = -tf.reduce_mean(
+                input_tensor=tf.reduce_sum(input_tensor=one_hot_positions * log_probs, axis=-1))
             return loss
 
         if mode != tf.estimator.ModeKeys.PREDICT:
@@ -1210,11 +1214,12 @@ def model_fn_builder(bert_config, init_checkpoint, learning_rate, num_train_step
                 output_dir=OUTPUT_DIR,
                 summary_op=tf.compat.v1.summary.merge_all(),
             )
-            output_spec = tf.compat.v1.estimator.tpu.TPUEstimatorSpec(mode=mode,
-                                                          loss=total_loss,
-                                                          train_op=train_op,
-                                                          training_hooks=[summaries],
-                                                          scaffold_fn=scaffold_fn)
+            output_spec = tf.compat.v1.estimator.tpu.TPUEstimatorSpec(
+                mode=mode,
+                loss=total_loss,
+                train_op=train_op,
+                training_hooks=[summaries],
+                scaffold_fn=scaffold_fn)
         elif mode == tf.estimator.ModeKeys.EVAL:
             write_summaries('eval')
             summaries = tf.estimator.SummarySaverHook(
@@ -1236,9 +1241,10 @@ def model_fn_builder(bert_config, init_checkpoint, learning_rate, num_train_step
                 "start_logits": start_logits,
                 "end_logits": end_logits,
             }
-            output_spec = tf.compat.v1.estimator.tpu.TPUEstimatorSpec(mode=mode,
-                                                          predictions=predictions,
-                                                          scaffold_fn=scaffold_fn)
+            output_spec = tf.compat.v1.estimator.tpu.TPUEstimatorSpec(
+                mode=mode,
+                predictions=predictions,
+                scaffold_fn=scaffold_fn)
         else:
             raise ValueError("Only TRAIN and PREDICT modes are supported: %s" % (mode))
 
@@ -1264,14 +1270,15 @@ def main(_):
             FLAGS.tpu_name, zone=FLAGS.tpu_zone, project=FLAGS.gcp_project)
 
     is_per_host = tf.compat.v1.estimator.tpu.InputPipelineConfig.PER_HOST_V2
-    run_config = tf.compat.v1.estimator.tpu.RunConfig(cluster=tpu_cluster_resolver,
-                                          master=FLAGS.master,
-                                          model_dir=OUTPUT_DIR,
-                                          save_checkpoints_steps=FLAGS.save_checkpoints_steps,
-                                          tpu_config=tf.compat.v1.estimator.tpu.TPUConfig(
-                                              iterations_per_loop=FLAGS.iterations_per_loop,
-                                              num_shards=FLAGS.num_tpu_cores,
-                                              per_host_input_for_training=is_per_host))
+    run_config = tf.compat.v1.estimator.tpu.RunConfig(
+        cluster=tpu_cluster_resolver,
+        master=FLAGS.master,
+        model_dir=OUTPUT_DIR,
+        save_checkpoints_steps=FLAGS.save_checkpoints_steps,
+        tpu_config=tf.compat.v1.estimator.tpu.TPUConfig(
+            iterations_per_loop=FLAGS.iterations_per_loop,
+            num_shards=FLAGS.num_tpu_cores,
+            per_host_input_for_training=is_per_host))
 
     feature_metadata = _process_train_features_if_necessary()
 
@@ -1285,11 +1292,12 @@ def main(_):
 
     # If TPU is not available, this will fall back to normal Estimator on CPU
     # or GPU.
-    estimator = tf.compat.v1.estimator.tpu.TPUEstimator(use_tpu=FLAGS.use_tpu,
-                                            model_fn=model_fn,
-                                            config=run_config,
-                                            train_batch_size=FLAGS.train_batch_size,
-                                            predict_batch_size=FLAGS.predict_batch_size)
+    estimator = tf.compat.v1.estimator.tpu.TPUEstimator(
+        use_tpu=FLAGS.use_tpu,
+        model_fn=model_fn,
+        config=run_config,
+        train_batch_size=FLAGS.train_batch_size,
+        predict_batch_size=FLAGS.predict_batch_size)
 
     if FLAGS.do_train:
         train_input_fn = input_fn_builder(input_file=TRAIN_TF_RECORD,
