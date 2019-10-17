@@ -1,5 +1,6 @@
 tensorflow >= 2.0.0 # (should be installed manually)
 
+absl-py==0.8.1
 flake8==3.7.8
 matplotlib==3.0.1
 numpy==1.16.4

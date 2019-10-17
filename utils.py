@@ -1,12 +1,13 @@
 import collections
 import re
+import six
 import tensorflow as tf
 
 
 def compute_batch_accuracy(logits, positions):
-    predictions = tf.arg_max(logits, 1)
+    predictions = tf.argmax(logits, 1)
     correct_predictions = tf.cast(tf.equal(tf.cast(predictions, tf.int32), positions), tf.int32)
-    return tf.math.divide(tf.reduce_sum(correct_predictions), positions.get_shape()[0])
+    return tf.math.divide(tf.reduce_sum(input_tensor=correct_predictions), positions.get_shape()[0])
 
 
 def get_assignment_map_from_checkpoint(tvars, init_checkpoint):
@@ -67,7 +68,36 @@ def get_shape_list(tensor, expected_rank=None, name=None):
     if not non_static_indexes:
         return shape
 
-    dyn_shape = tf.shape(tensor)
+    dyn_shape = tf.shape(input=tensor)
     for index in non_static_indexes:
         shape[index] = dyn_shape[index]
     return shape
+
+
+def assert_rank(tensor, expected_rank, name=None):
+    """Raises an exception if the tensor rank is not of the expected rank.
+
+  Args:
+    tensor: A tf.Tensor to check the rank of.
+    expected_rank: Python integer or list of integers, expected rank.
+    name: Optional name of the tensor for the error message.
+
+  Raises:
+    ValueError: If the expected shape doesn't match the actual shape.
+  """
+    if name is None:
+        name = tensor.name
+
+    expected_rank_dict = {}
+    if isinstance(expected_rank, six.integer_types):
+        expected_rank_dict[expected_rank] = True
+    else:
+        for x in expected_rank:
+            expected_rank_dict[x] = True
+
+    actual_rank = tensor.shape.ndims
+    if actual_rank not in expected_rank_dict:
+        scope_name = tf.get_variable_scope().name
+        raise ValueError("For the tensor `%s` in scope `%s`, the actual rank "
+                         "`%d` (shape = %s) is not equal to the expected rank `%s`" %
+                         (name, scope_name, actual_rank, str(tensor.shape), str(expected_rank)))
