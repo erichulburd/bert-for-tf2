@@ -9,13 +9,12 @@ import os
 import six
 import random
 import math
-from absl import flags
-
+from absl import flags, app
 
 from bert import BertModelLayer
-from bert.loader import StockBertConfig, map_stock_config_to_params, load_stock_weights
+from bert.loader import params_from_pretrained_ckpt, load_stock_weights, StockBertConfig
 from bert import tokenization
-from utils import compute_batch_accuracy, get_assignment_map_from_checkpoint, get_shape_list
+from utils import compute_batch_accuracy, get_shape_list
 from optimization import create_optimizer
 
 FLAGS = flags.FLAGS
@@ -57,6 +56,8 @@ flags.DEFINE_integer(
 flags.DEFINE_integer(
     "doc_stride", 128, "When splitting up a long document into chunks, how much stride to "
     "take between chunks.")
+
+flags.DEFINE_integer("adapter_size", None, "Adapter size for adapter-BERT")
 
 flags.DEFINE_integer(
     "max_query_length", 64, "The maximum number of tokens for the question. Questions longer than "
@@ -128,23 +129,15 @@ flags.DEFINE_integer(
     "n_max_examples", None, "If evaluating a model, limit the number of processed examples to do\
         initial run on.")
 
-OUTPUT_DIR = os.path.join(FLAGS.data_dir, FLAGS.output_subdir)
-
-n_examples_suffix = str(FLAGS.n_max_examples) if FLAGS.n_max_examples is not None else ''
-
-TRAIN_TF_RECORD = os.path.join(FLAGS.data_dir, "train%s.tf_record" % n_examples_suffix)
-EVAL_TF_RECORD = os.path.join(FLAGS.data_dir, "eval%s.tf_record" % n_examples_suffix)
-
-TRAIN_SQUAD_FILE = os.path.join(FLAGS.data_dir, FLAGS.train_squad_file)
-EVAL_SQUAD_FILE = os.path.join(FLAGS.data_dir, FLAGS.eval_squad_file)
-
-BERT_DIRECTORY = os.path.join(FLAGS.data_dir, FLAGS.bert_directory)
-VOCAB_FILE = os.path.join(BERT_DIRECTORY, 'vocab.txt')
-BERT_CONFIG_FILE = os.path.join(BERT_DIRECTORY, 'bert_config.json')
-
-INIT_CHECKPOINT = FLAGS.init_checkpoint
-if INIT_CHECKPOINT is None:
-    INIT_CHECKPOINT = os.path.join(BERT_DIRECTORY, 'bert_model.ckpt')
+OUTPUT_DIR = None
+TRAIN_TF_RECORD = None
+EVAL_TF_RECORD = None
+TRAIN_SQUAD_FILE = None
+EVAL_SQUAD_FILE = None
+BERT_DIRECTORY = None
+VOCAB_FILE = None
+BERT_CONFIG_FILE = None
+INIT_CHECKPOINT = None
 
 
 def flatten_layers(root_layer):
@@ -461,8 +454,8 @@ def convert_examples_to_features(examples, tokenizer, max_seq_length, doc_stride
                     " ".join(["%d:%s" % (x, y) for (x, y) in six.iteritems(token_is_max_context)]))
                 tf.compat.v1.logging.info("input_ids: %s" % " ".join([str(x) for x in input_ids]))
                 tf.compat.v1.logging.info("input_mask: %s" % " ".join([str(x) for x in input_mask]))
-                tf.compat.v1.logging.info(
-                    "segment_ids: %s" % " ".join([str(x) for x in segment_ids]))
+                tf.compat.v1.logging.info("segment_ids: %s" %
+                                          " ".join([str(x) for x in segment_ids]))
                 if is_training and example.is_impossible:
                     tf.compat.v1.logging.info("impossible example")
                 if is_training and not example.is_impossible:
@@ -604,10 +597,10 @@ def input_fn_builder(input_file, seq_length, is_training, drop_remainder):
             d = d.shuffle(buffer_size=100)
 
         d = d.apply(
-            tf.data.experimental.map_and_batch(
-                lambda record: _decode_record(record, name_to_features),
-                batch_size=batch_size,
-                drop_remainder=drop_remainder))
+            tf.data.experimental.map_and_batch(lambda record: _decode_record(
+                record, name_to_features),
+                                               batch_size=batch_size,
+                                               drop_remainder=drop_remainder))
 
         return d
 
@@ -857,8 +850,8 @@ def get_final_text(pred_text, orig_text, do_lower_case):
 
     if len(orig_ns_text) != len(tok_ns_text):
         if FLAGS.verbose_logging:
-            tf.compat.v1.logging.info(
-                "Length not equal after stripping spaces: '%s' vs '%s'", orig_ns_text, tok_ns_text)
+            tf.compat.v1.logging.info("Length not equal after stripping spaces: '%s' vs '%s'",
+                                      orig_ns_text, tok_ns_text)
         return orig_text
 
     # We then project the characters in `pred_text` back to `orig_text` using
@@ -1078,16 +1071,27 @@ def _process_eval_features_if_necessary():
     return (eval_examples, eval_features)
 
 
-def create_model(input_ids, segment_ids, adapter_size):
+def create_model(input_ids, segment_ids, input_mask, adapter_size, is_training):
     """Creates a classification model."""
-    # create the bert layer
-    with tf.io.gfile.GFile(BERT_CONFIG_FILE, "r") as reader:
-        bc = StockBertConfig.from_json_string(reader.read())
-        bert_params = map_stock_config_to_params(bc)
-        bert_params.adapter_size = adapter_size
-        bert = BertModelLayer.from_params(bert_params, name="bert")
+    bert_params = params_from_pretrained_ckpt(BERT_DIRECTORY)
+    bert_params.adapter_size = adapter_size
+    bert = BertModelLayer.from_params(bert_params, name="bert")
 
-    final_hidden = bert([input_ids, segment_ids])
+    if FLAGS.adapter_size is not None:
+        bert.apply_adapter_freeze()
+
+    final_hidden = bert([input_ids, segment_ids], mask=input_mask, training=is_training)
+
+    print('input_ids', input_ids)
+    print('segment_ids', segment_ids)
+    print('final_hidden', final_hidden)
+    # model = keras.Model(inputs=[input_ids, segment_ids], outputs=final_hidden)
+    # model.build(input_shape=[(None, FLAGS.max_seq_length), (None, FLAGS.max_seq_lenth)])
+    skipped_weight_value_tuples = load_stock_weights(bert, INIT_CHECKPOINT)
+
+    print('=== skipped_weight_value_tuples ===')
+    for (param, value) in skipped_weight_value_tuples:
+        print('\t%s = %d' % (param, value))
 
     final_hidden_shape = get_shape_list(final_hidden, expected_rank=3)
     batch_size = final_hidden_shape[0]
@@ -1108,27 +1112,23 @@ def create_model(input_ids, segment_ids, adapter_size):
         start_logits = end_logits = None
 
         if config.model == 'contextualized_cnn':
-            (start_logits,
-             end_logits) = contextualized_cnn.create_contextualized_cnn_model(FLAGS.do_train,
-                                                                              final_hidden,
-                                                                              config,
-                                                                              batch_size,
-                                                                              segment_ids=segment_ids)
+            (start_logits, end_logits) = contextualized_cnn.create_contextualized_cnn_model(
+                FLAGS.do_train, final_hidden, config, batch_size, segment_ids=segment_ids)
         elif config.model == 'ccnn_shen':
-            (start_logits,
-             end_logits) = ccnn_shen.create_ccnn_shen(FLAGS.do_train,
-                                                      final_hidden,
-                                                      config,
-                                                      batch_size,
-                                                      segment_ids=segment_ids)
+            (start_logits, end_logits) = ccnn_shen.create_ccnn_shen(FLAGS.do_train,
+                                                                    final_hidden,
+                                                                    config,
+                                                                    batch_size,
+                                                                    segment_ids=segment_ids)
         else:
             raise ValueError('Unexected model %s' % config.model)
     else:
-        output_weights = tf.get_variable("cls/squad/output_weights", [2, hidden_size],
-                                         initializer=tf.truncated_normal_initializer(stddev=0.02))
+        output_weights = tf.compat.v1.get_variable(
+            "cls/squad/output_weights", [2, hidden_size],
+            initializer=tf.compat.v1.truncated_normal_initializer(stddev=0.02))
 
-        output_bias = tf.get_variable("cls/squad/output_bias", [2],
-                                      initializer=tf.zeros_initializer())
+        output_bias = tf.compat.v1.get_variable("cls/squad/output_bias", [2],
+                                                initializer=tf.compat.v1.zeros_initializer())
 
         final_hidden_matrix = tf.reshape(final_hidden, [batch_size * seq_length, hidden_size])
         logits = tf.matmul(final_hidden_matrix, output_weights, transpose_b=True)
@@ -1157,37 +1157,22 @@ def model_fn_builder(bert_config, init_checkpoint, learning_rate, num_train_step
 
         unique_ids = features["unique_ids"]
         input_ids = features["input_ids"]
-        # input_mask = features["input_mask"]
+        input_mask = features["input_mask"]
         segment_ids = features["segment_ids"]
-
-        # is_training = (mode == tf.estimator.ModeKeys.TRAIN)
 
         (start_logits, end_logits) = create_model(input_ids=input_ids,
                                                   segment_ids=segment_ids,
-                                                  adapter_size=FLAGS.adapter_size)
+                                                  input_mask=input_mask,
+                                                  adapter_size=FLAGS.adapter_size,
+                                                  is_training=(mode == tf.estimator.ModeKeys.TRAIN))
 
         tvars = tf.compat.v1.trainable_variables()
 
-        initialized_variable_names = {}
         scaffold_fn = None
-        if init_checkpoint:
-            (assignment_map, initialized_variable_names) = get_assignment_map_from_checkpoint(
-                tvars, init_checkpoint)
-            if use_tpu:
-
-                def tpu_scaffold():
-                    tf.compat.v1.train.init_from_checkpoint(init_checkpoint, assignment_map)
-                    return tf.compat.v1.train.Scaffold()
-
-                scaffold_fn = tpu_scaffold
-            else:
-                tf.compat.v1.train.init_from_checkpoint(init_checkpoint, assignment_map)
 
         tf.compat.v1.logging.info("**** Trainable Variables ****")
         for var in tvars:
             init_string = ""
-            if var.name in initialized_variable_names:
-                init_string = ", *INIT_FROM_CKPT*"
             tf.compat.v1.logging.info("  name = %s, shape = %s%s", var.name, var.shape, init_string)
 
         output_spec = None
@@ -1234,12 +1219,11 @@ def model_fn_builder(bert_config, init_checkpoint, learning_rate, num_train_step
                 output_dir=OUTPUT_DIR,
                 summary_op=tf.compat.v1.summary.merge_all(),
             )
-            output_spec = tf.compat.v1.estimator.tpu.TPUEstimatorSpec(
-                mode=mode,
-                loss=total_loss,
-                train_op=train_op,
-                training_hooks=[summaries],
-                scaffold_fn=scaffold_fn)
+            output_spec = tf.compat.v1.estimator.tpu.TPUEstimatorSpec(mode=mode,
+                                                                      loss=total_loss,
+                                                                      train_op=train_op,
+                                                                      training_hooks=[summaries],
+                                                                      scaffold_fn=scaffold_fn)
         elif mode == tf.estimator.ModeKeys.EVAL:
             write_summaries('eval')
             summaries = tf.estimator.SummarySaverHook(
@@ -1261,10 +1245,9 @@ def model_fn_builder(bert_config, init_checkpoint, learning_rate, num_train_step
                 "start_logits": start_logits,
                 "end_logits": end_logits,
             }
-            output_spec = tf.compat.v1.estimator.tpu.TPUEstimatorSpec(
-                mode=mode,
-                predictions=predictions,
-                scaffold_fn=scaffold_fn)
+            output_spec = tf.compat.v1.estimator.tpu.TPUEstimatorSpec(mode=mode,
+                                                                      predictions=predictions,
+                                                                      scaffold_fn=scaffold_fn)
         else:
             raise ValueError("Only TRAIN and PREDICT modes are supported: %s" % (mode))
 
@@ -1274,6 +1257,34 @@ def model_fn_builder(bert_config, init_checkpoint, learning_rate, num_train_step
 
 
 def main(_):
+    global OUTPUT_DIR
+    global TRAIN_TF_RECORD
+    global EVAL_TF_RECORD
+    global TRAIN_SQUAD_FILE
+    global EVAL_SQUAD_FILE
+    global BERT_DIRECTORY
+    global VOCAB_FILE
+    global BERT_CONFIG_FILE
+    global INIT_CHECKPOINT
+
+    OUTPUT_DIR = os.path.join(FLAGS.data_dir, FLAGS.output_subdir)
+
+    n_examples_suffix = str(FLAGS.n_max_examples) if FLAGS.n_max_examples is not None else ''
+
+    TRAIN_TF_RECORD = os.path.join(FLAGS.data_dir, "train%s.tf_record" % n_examples_suffix)
+    EVAL_TF_RECORD = os.path.join(FLAGS.data_dir, "eval%s.tf_record" % n_examples_suffix)
+
+    TRAIN_SQUAD_FILE = os.path.join(FLAGS.data_dir, FLAGS.train_squad_file)
+    EVAL_SQUAD_FILE = os.path.join(FLAGS.data_dir, FLAGS.eval_squad_file)
+
+    BERT_DIRECTORY = os.path.join(FLAGS.data_dir, FLAGS.bert_directory)
+    VOCAB_FILE = os.path.join(BERT_DIRECTORY, 'vocab.txt')
+    BERT_CONFIG_FILE = os.path.join(BERT_DIRECTORY, 'bert_config.json')
+
+    INIT_CHECKPOINT = FLAGS.init_checkpoint
+    if INIT_CHECKPOINT is None:
+        INIT_CHECKPOINT = os.path.join(BERT_DIRECTORY, 'bert_model.ckpt')
+
     tf.compat.v1.logging.set_verbosity(tf.compat.v1.logging.INFO)
 
     bert_config = None
@@ -1312,12 +1323,11 @@ def main(_):
 
     # If TPU is not available, this will fall back to normal Estimator on CPU
     # or GPU.
-    estimator = tf.compat.v1.estimator.tpu.TPUEstimator(
-        use_tpu=FLAGS.use_tpu,
-        model_fn=model_fn,
-        config=run_config,
-        train_batch_size=FLAGS.train_batch_size,
-        predict_batch_size=FLAGS.predict_batch_size)
+    estimator = tf.compat.v1.estimator.tpu.TPUEstimator(use_tpu=FLAGS.use_tpu,
+                                                        model_fn=model_fn,
+                                                        config=run_config,
+                                                        train_batch_size=FLAGS.train_batch_size,
+                                                        predict_batch_size=FLAGS.predict_batch_size)
 
     if FLAGS.do_train:
         train_input_fn = input_fn_builder(input_file=TRAIN_TF_RECORD,
@@ -1358,4 +1368,4 @@ def main(_):
 
 
 if __name__ == "__main__":
-    tf.compat.v1.app.run()
+    app.run(main)
