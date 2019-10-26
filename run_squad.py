@@ -564,47 +564,6 @@ def _check_is_max_context(doc_spans, cur_span_index, position):
     return cur_span_index == best_span_index
 
 
-# TODO: Make this compatible with create_model_fn
-def create_model(max_seq_len, adapter_size=64):
-    """Creates a classification model."""
-
-    # create the bert layer
-    with tf.io.gfile.GFile(BERT_CONFIG_FILE, "r") as reader:
-        bc = StockBertConfig.from_json_string(reader.read())
-        bert_params = map_stock_config_to_params(bc)
-        bert_params.adapter_size = adapter_size
-        bert = BertModelLayer.from_params(bert_params, name="bert")
-
-    input_ids = keras.layers.Input(shape=(max_seq_len, ), dtype='int32', name="input_ids")
-    token_type_ids = keras.layers.Input(shape=(max_seq_len,), dtype='int32', name="token_type_ids")
-    output = bert([input_ids, token_type_ids])
-
-    print("bert shape", output.shape)
-    cls_out = keras.layers.Lambda(lambda seq: seq[:, 0, :])(output)
-    cls_out = keras.layers.Dropout(0.5)(cls_out)
-    logits = keras.layers.Dense(units=768, activation="tanh")(cls_out)
-    logits = keras.layers.Dropout(0.5)(logits)
-    logits = keras.layers.Dense(units=2, activation="softmax")(logits)
-
-    model = keras.Model(inputs=[input_ids, token_type_ids], outputs=logits)
-    model.build(input_shape=[(None, max_seq_len), (None, max_seq_len)])
-
-    # load the pre-trained model weights
-    load_stock_weights(bert, INIT_CHECKPOINT)
-
-    # freeze weights if adapter-BERT is used
-    if adapter_size is not None:
-        freeze_bert_layers(bert)
-
-    model.compile(optimizer=keras.optimizers.Adam(),
-                  loss=keras.losses.SparseCategoricalCrossentropy(from_logits=True),
-                  metrics=[keras.metrics.SparseCategoricalAccuracy(name="acc")])
-
-    model.summary()
-
-    return model
-
-
 def input_fn_builder(input_file, seq_length, is_training, drop_remainder):
     """Creates an `input_fn` closure to be passed to TPUEstimator."""
 
@@ -1119,6 +1078,72 @@ def _process_eval_features_if_necessary():
     return (eval_examples, eval_features)
 
 
+def create_model(input_ids, segment_ids, adapter_size):
+    """Creates a classification model."""
+    # create the bert layer
+    with tf.io.gfile.GFile(BERT_CONFIG_FILE, "r") as reader:
+        bc = StockBertConfig.from_json_string(reader.read())
+        bert_params = map_stock_config_to_params(bc)
+        bert_params.adapter_size = adapter_size
+        bert = BertModelLayer.from_params(bert_params, name="bert")
+
+    final_hidden = bert([input_ids, segment_ids])
+
+    final_hidden_shape = get_shape_list(final_hidden, expected_rank=3)
+    batch_size = final_hidden_shape[0]
+    seq_length = final_hidden_shape[1]
+    hidden_size = final_hidden_shape[2]
+
+    if FLAGS.layer_config:
+        config = None
+        if FLAGS.do_train:
+            config = _initialize_layer_config(FLAGS.layer_config, bert_config)
+            with tf.gfile.Open(os.path.join(OUTPUT_DIR, 'config.json'), "w") as f:
+                json.dump(config.serialize(), f)
+                print('=== CONFIG ===')
+                print(config.serialize())
+        else:
+            config = _initialize_layer_config(os.path.join(OUTPUT_DIR, 'config.json'), bert_config)
+
+        start_logits = end_logits = None
+
+        if config.model == 'contextualized_cnn':
+            (start_logits,
+             end_logits) = contextualized_cnn.create_contextualized_cnn_model(FLAGS.do_train,
+                                                                              final_hidden,
+                                                                              config,
+                                                                              batch_size,
+                                                                              segment_ids=segment_ids)
+        elif config.model == 'ccnn_shen':
+            (start_logits,
+             end_logits) = ccnn_shen.create_ccnn_shen(FLAGS.do_train,
+                                                      final_hidden,
+                                                      config,
+                                                      batch_size,
+                                                      segment_ids=segment_ids)
+        else:
+            raise ValueError('Unexected model %s' % config.model)
+    else:
+        output_weights = tf.get_variable("cls/squad/output_weights", [2, hidden_size],
+                                         initializer=tf.truncated_normal_initializer(stddev=0.02))
+
+        output_bias = tf.get_variable("cls/squad/output_bias", [2],
+                                      initializer=tf.zeros_initializer())
+
+        final_hidden_matrix = tf.reshape(final_hidden, [batch_size * seq_length, hidden_size])
+        logits = tf.matmul(final_hidden_matrix, output_weights, transpose_b=True)
+        logits = tf.nn.bias_add(logits, output_bias)
+
+        logits = tf.reshape(logits, [batch_size, seq_length, 2])
+        logits = tf.transpose(logits, [2, 0, 1])
+
+        unstacked_logits = tf.unstack(logits, axis=0)
+
+        (start_logits, end_logits) = (unstacked_logits[0], unstacked_logits[1])
+
+    return (start_logits, end_logits)
+
+
 def model_fn_builder(bert_config, init_checkpoint, learning_rate, num_train_steps, num_warmup_steps,
                      use_tpu, use_one_hot_embeddings):
     """Returns `model_fn` closure for TPUEstimator."""
@@ -1132,17 +1157,14 @@ def model_fn_builder(bert_config, init_checkpoint, learning_rate, num_train_step
 
         unique_ids = features["unique_ids"]
         input_ids = features["input_ids"]
-        input_mask = features["input_mask"]
+        # input_mask = features["input_mask"]
         segment_ids = features["segment_ids"]
 
-        is_training = (mode == tf.estimator.ModeKeys.TRAIN)
+        # is_training = (mode == tf.estimator.ModeKeys.TRAIN)
 
-        (start_logits, end_logits) = create_model(bert_config=bert_config,
-                                                  is_training=is_training,
-                                                  input_ids=input_ids,
-                                                  input_mask=input_mask,
+        (start_logits, end_logits) = create_model(input_ids=input_ids,
                                                   segment_ids=segment_ids,
-                                                  use_one_hot_embeddings=use_one_hot_embeddings)
+                                                  adapter_size=FLAGS.adapter_size)
 
         tvars = tf.compat.v1.trainable_variables()
 
