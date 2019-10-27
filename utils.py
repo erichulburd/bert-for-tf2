@@ -4,9 +4,13 @@ import six
 import tensorflow as tf
 
 
-def compute_batch_accuracy(logits, positions):
+def get_correct_predictions(logits, positions):
     predictions = tf.argmax(logits, 1)
-    correct_predictions = tf.cast(tf.equal(tf.cast(predictions, tf.int32), positions), tf.int32)
+    return tf.cast(tf.equal(tf.cast(predictions, tf.int32), positions), tf.int32)
+
+
+def compute_batch_accuracy(logits, positions):
+    correct_predictions = get_correct_predictions(logits, positions)
     return tf.math.divide(tf.reduce_sum(input_tensor=correct_predictions), positions.get_shape()[0])
 
 

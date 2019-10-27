@@ -14,7 +14,7 @@ from absl import flags, app
 from bert import BertModelLayer
 from bert.loader import params_from_pretrained_ckpt, load_stock_weights, StockBertConfig
 from bert import tokenization
-from utils import compute_batch_accuracy, get_shape_list
+from utils import get_correct_predictions, get_shape_list
 from optimization import create_optimizer
 
 FLAGS = flags.FLAGS
@@ -557,17 +557,15 @@ def _check_is_max_context(doc_spans, cur_span_index, position):
     return cur_span_index == best_span_index
 
 
-def input_fn_builder(input_file, seq_length, is_training, drop_remainder):
-    """Creates an `input_fn` closure to be passed to TPUEstimator."""
-
+def get_dataset(input_file, drop_remainder):
     name_to_features = {
         "unique_ids": tf.io.FixedLenFeature([], tf.int64),
-        "input_ids": tf.io.FixedLenFeature([seq_length], tf.int64),
-        "input_mask": tf.io.FixedLenFeature([seq_length], tf.int64),
-        "segment_ids": tf.io.FixedLenFeature([seq_length], tf.int64),
+        "input_ids": tf.io.FixedLenFeature([FLAGS.max_seq_length], tf.int64),
+        "input_mask": tf.io.FixedLenFeature([FLAGS.max_seq_length], tf.int64),
+        "segment_ids": tf.io.FixedLenFeature([FLAGS.max_seq_length], tf.int64),
     }
 
-    if is_training:
+    if FLAGS.do_train:
         name_to_features["start_positions"] = tf.io.FixedLenFeature([], tf.int64)
         name_to_features["end_positions"] = tf.io.FixedLenFeature([], tf.int64)
 
@@ -585,26 +583,21 @@ def input_fn_builder(input_file, seq_length, is_training, drop_remainder):
 
         return example
 
-    def input_fn(params):
-        """The actual input function."""
-        batch_size = params["batch_size"]
+    # For training, we want a lot of parallel reading and shuffling.
+    # For eval, we want no shuffling and parallel reading doesn't matter.
+    d = tf.data.TFRecordDataset(input_file)
+    if FLAGS.do_train:
+        d = d.repeat()
+        d = d.shuffle(buffer_size=100)
 
-        # For training, we want a lot of parallel reading and shuffling.
-        # For eval, we want no shuffling and parallel reading doesn't matter.
-        d = tf.data.TFRecordDataset(input_file)
-        if is_training:
-            d = d.repeat()
-            d = d.shuffle(buffer_size=100)
+    batch_size = FLAGS.train_batch_size if FLAGS.do_train else FLAGS.predict_batch_size
+    d = d.apply(
+        tf.data.experimental.map_and_batch(
+            lambda record: _decode_record(record, name_to_features),
+            batch_size=batch_size,
+            drop_remainder=drop_remainder))
 
-        d = d.apply(
-            tf.data.experimental.map_and_batch(lambda record: _decode_record(
-                record, name_to_features),
-                                               batch_size=batch_size,
-                                               drop_remainder=drop_remainder))
-
-        return d
-
-    return input_fn
+    return d
 
 
 RawResult = collections.namedtuple("RawResult", ["unique_id", "start_logits", "end_logits"])
@@ -1071,8 +1064,12 @@ def _process_eval_features_if_necessary():
     return (eval_examples, eval_features)
 
 
-def create_model(input_ids, segment_ids, input_mask, adapter_size, is_training):
-    """Creates a classification model."""
+def create_model(adapter_size, is_training):
+    # unique_ids = keras.layers.Input(shape=(FLAGS.max_seq_len, ), dtype='int32', name="unique_ids")
+    input_ids = keras.layers.Input(shape=(FLAGS.max_seq_len, ), dtype='int32', name="input_ids")
+    input_mask = keras.layers.Input(shape=(FLAGS.max_seq_len, ), dtype='int32', name="input_mask")
+    segment_ids = keras.layers.Input(shape=(FLAGS.max_seq_len, ), dtype='int32', name="segment_ids")
+
     bert_params = params_from_pretrained_ckpt(BERT_DIRECTORY)
     bert_params.adapter_size = adapter_size
     bert = BertModelLayer.from_params(bert_params, name="bert")
@@ -1087,55 +1084,27 @@ def create_model(input_ids, segment_ids, input_mask, adapter_size, is_training):
     seq_length = final_hidden_shape[1]
     hidden_size = final_hidden_shape[2]
 
-    if FLAGS.layer_config:
-        """
-        config = None
-        if FLAGS.do_train:
-            config = _initialize_layer_config(FLAGS.layer_config, bert_config)
-            with tf.gfile.Open(os.path.join(OUTPUT_DIR, 'config.json'), "w") as f:
-                json.dump(config.serialize(), f)
-                print('=== CONFIG ===')
-                print(config.serialize())
-        else:
-            config = _initialize_layer_config(os.path.join(OUTPUT_DIR, 'config.json'), bert_config)
+    output_weights = tf.compat.v1.get_variable(
+        "cls/squad/output_weights", [2, hidden_size],
+        initializer=tf.compat.v1.truncated_normal_initializer(stddev=0.02))
 
-        start_logits = end_logits = None
+    output_bias = tf.compat.v1.get_variable("cls/squad/output_bias", [2],
+                                            initializer=tf.compat.v1.zeros_initializer())
 
-        if config.model == 'contextualized_cnn':
-            (start_logits, end_logits) = contextualized_cnn.create_contextualized_cnn_model(
-                FLAGS.do_train, final_hidden, config, batch_size, segment_ids=segment_ids)
-        elif config.model == 'ccnn_shen':
-            (start_logits, end_logits) = ccnn_shen.create_ccnn_shen(FLAGS.do_train,
-                                                                    final_hidden,
-                                                                    config,
-                                                                    batch_size,
-                                                                    segment_ids=segment_ids)
-        else:
-            raise ValueError('Unexected model %s' % config.model)
-        """
-        raise ValueError('Layer config not currently supported.')
-    else:
-        output_weights = tf.compat.v1.get_variable(
-            "cls/squad/output_weights", [2, hidden_size],
-            initializer=tf.compat.v1.truncated_normal_initializer(stddev=0.02))
+    final_hidden_matrix = tf.reshape(final_hidden, [batch_size * seq_length, hidden_size])
+    logits = tf.matmul(final_hidden_matrix, output_weights, transpose_b=True)
+    logits = tf.nn.bias_add(logits, output_bias)
 
-        output_bias = tf.compat.v1.get_variable("cls/squad/output_bias", [2],
-                                                initializer=tf.compat.v1.zeros_initializer())
+    logits = tf.reshape(logits, [batch_size, seq_length, 2])
+    logits = tf.transpose(logits, [2, 0, 1])
 
-        final_hidden_matrix = tf.reshape(final_hidden, [batch_size * seq_length, hidden_size])
-        logits = tf.matmul(final_hidden_matrix, output_weights, transpose_b=True)
-        logits = tf.nn.bias_add(logits, output_bias)
+    unstacked_logits = tf.unstack(logits, axis=0)
 
-        logits = tf.reshape(logits, [batch_size, seq_length, 2])
-        logits = tf.transpose(logits, [2, 0, 1])
-
-        unstacked_logits = tf.unstack(logits, axis=0)
-
-        (start_logits, end_logits) = (unstacked_logits[0], unstacked_logits[1])
+    (start_logits, end_logits) = (unstacked_logits[0], unstacked_logits[1])
 
     outputs = {'start_logits': start_logits, 'end_logits': end_logits}
 
-    model = keras.Model(inputs=[input_ids, segment_ids], outputs=outputs)
+    model = keras.Model(inputs=[input_ids, segment_ids, input_mask], outputs=outputs)
     model.build(input_shape=[(None, FLAGS.max_seq_length), (None, FLAGS.max_seq_lenth)])
 
     skipped_weight_value_tuples = load_stock_weights(bert, INIT_CHECKPOINT)
@@ -1148,7 +1117,7 @@ def create_model(input_ids, segment_ids, input_mask, adapter_size, is_training):
 
     # TODO
     optimizer = keras.optimizers.Adam()
-    metrics = [keras.metrics.SparseCategoricalAccuracy(name="acc")]
+    metrics = [SQUaDAccuracy('start'), SQUaDAccuracy('end')]
 
     model.compile(optimizer=optimizer, loss=TotalPositionLoss, metrics=metrics)
 
@@ -1158,7 +1127,7 @@ def create_model(input_ids, segment_ids, input_mask, adapter_size, is_training):
 
 
 def compute_loss(logits, positions):
-    one_hot_positions = tf.one_hot(positions, depth=seq_length, dtype=tf.float32)
+    one_hot_positions = tf.one_hot(positions, depth=FLAGS.max_seq_length, dtype=tf.float32)
     log_probs = tf.nn.log_softmax(logits, axis=-1)
     loss = -tf.reduce_mean(
         input_tensor=tf.reduce_sum(input_tensor=one_hot_positions * log_probs, axis=-1))
@@ -1178,85 +1147,35 @@ class TotalPositionLoss(tf.losses.Loss):
         return (start_loss + end_loss) / 2.0
 
 
-def create_and_fit_model(data, labels, mode, params):  # pylint: disable=unused-argument
-    unique_ids = keras.layers.Input(shape=(FLAGS.max_seq_len, ), dtype='int32', name="unique_ids")
-    input_ids = keras.layers.Input(shape=(FLAGS.max_seq_len, ), dtype='int32', name="input_ids")
-    input_mask = keras.layers.Input(shape=(FLAGS.max_seq_len, ), dtype='int32', name="input_mask")
-    segment_ids = keras.layers.Input(shape=(FLAGS.max_seq_len, ), dtype='int32', name="segment_ids")
+class SQUaDAccuracy(tf.keras.metrics.Reduce):
 
-    model = create_model(input_ids=input_ids,
-                         segment_ids=segment_ids,
-                         input_mask=input_mask,
-                         adapter_size=FLAGS.adapter_size,
-                         is_training=(mode == tf.estimator.ModeKeys.TRAIN))
+    def __init__(self, position, **kwargs):
+        super(SQUaDAccuracy, self).__init__(name='squad_accuracy_%s' % position, **kwargs)
+        self.position = position
+
+    def update_state(self, features, logits, sample_weight=None):
+        correct_predictions = get_correct_predictions(
+            logits['%s_logits' % self.position], features['%s_positions' % self.position])
+        return super(SQUaDAccuracy, self).update_state(correct_predictions, sample_weight)
+
+
+def create_and_fit_model(dataset):
+    model = create_model(adapter_size=FLAGS.adapter_size,
+                         is_training=FLAGS.do_predict)
 
     tensorboard_callback = keras.callbacks.TensorBoard(log_dir=OUTPUT_DIR)
 
     model.fit(
-        # TODO
-        x=data.train_x,
-        y=data.train_y,
+        x=dataset,
+        # y=NOne,
         validation_split=0.1,
         batch_size=FLAGS.train_batch_size,
         shuffle=True,
         epochs=FLAGS.num_train_epochs,
-        # TODO
         callbacks=[
-            create_learning_rate_scheduler(max_learn_rate=1e-5,
-                                           end_learn_rate=1e-7,
-                                           warmup_epoch_count=20,
-                                           total_epoch_count=total_epoch_count),
-            keras.callbacks.EarlyStopping(patience=20, restore_best_weights=True),
             tensorboard_callback
         ])
     model.save_weights(OUTPUT_DIR, overwrite=True)
-
-    if mode == tf.estimator.ModeKeys.TRAIN:
-        write_summaries('train')
-
-        # NOTE: We are using BERT's AdamWeightDecayOptimizer. We may want to reconsider
-        # this if we are not able to effectively train.
-        train_op = create_optimizer(total_loss, learning_rate, num_train_steps, num_warmup_steps,
-                                    use_tpu)
-
-        summaries = tf.estimator.SummarySaverHook(
-            save_steps=100,
-            output_dir=OUTPUT_DIR,
-            summary_op=tf.compat.v1.summary.merge_all(),
-        )
-        output_spec = tf.compat.v1.estimator.tpu.TPUEstimatorSpec(mode=mode,
-                                                                  loss=total_loss,
-                                                                  train_op=train_op,
-                                                                  training_hooks=[summaries],
-                                                                  scaffold_fn=scaffold_fn)
-    elif mode == tf.estimator.ModeKeys.EVAL:
-        write_summaries('eval')
-        summaries = tf.estimator.SummarySaverHook(
-            save_steps=1,
-            output_dir=OUTPUT_DIR,
-            summary_op=tf.compat.v1.summary.merge_all(),
-        )
-        predictions = {}
-
-        # inference_model = initialize_inference_model(hypes)
-        output_spec = tf.estimator.EstimatorSpec(mode,
-                                                 loss=total_loss,
-                                                 evaluation_hooks=[summaries],
-                                                 predictions=predictions)
-
-    elif mode == tf.estimator.ModeKeys.PREDICT:
-        predictions = {
-            "unique_ids": unique_ids,
-            "start_logits": start_logits,
-            "end_logits": end_logits,
-        }
-        output_spec = tf.compat.v1.estimator.tpu.TPUEstimatorSpec(mode=mode,
-                                                                  predictions=predictions,
-                                                                  scaffold_fn=scaffold_fn)
-    else:
-        raise ValueError("Only TRAIN and PREDICT modes are supported: %s" % (mode))
-
-    return output_spec
 
 
 def main(_):
@@ -1290,54 +1209,11 @@ def main(_):
 
     tf.compat.v1.logging.set_verbosity(tf.compat.v1.logging.INFO)
 
-    bert_config = None
-    with tf.io.gfile.GFile(BERT_CONFIG_FILE, "r") as reader:
-        bert_config = StockBertConfig.from_json_string(reader.read())
-
-    validate_flags_or_throw(bert_config)
-
     tf.io.gfile.makedirs(OUTPUT_DIR)
 
-    tpu_cluster_resolver = None
-    if FLAGS.use_tpu and FLAGS.tpu_name:
-        tpu_cluster_resolver = tf.distribute.cluster_resolver.TPUClusterResolver(
-            FLAGS.tpu_name, zone=FLAGS.tpu_zone, project=FLAGS.gcp_project)
-
-    is_per_host = tf.compat.v1.estimator.tpu.InputPipelineConfig.PER_HOST_V2
-    run_config = tf.compat.v1.estimator.tpu.RunConfig(
-        cluster=tpu_cluster_resolver,
-        master=FLAGS.master,
-        model_dir=OUTPUT_DIR,
-        save_checkpoints_steps=FLAGS.save_checkpoints_steps,
-        tpu_config=tf.compat.v1.estimator.tpu.TPUConfig(
-            iterations_per_loop=FLAGS.iterations_per_loop,
-            num_shards=FLAGS.num_tpu_cores,
-            per_host_input_for_training=is_per_host))
-
-    feature_metadata = _process_train_features_if_necessary()
-
-    model_fn = model_fn_builder(bert_config=bert_config,
-                                init_checkpoint=INIT_CHECKPOINT,
-                                learning_rate=FLAGS.learning_rate,
-                                num_train_steps=feature_metadata['num_train_steps'],
-                                num_warmup_steps=feature_metadata['num_warmup_steps'],
-                                use_tpu=FLAGS.use_tpu,
-                                use_one_hot_embeddings=FLAGS.use_tpu)
-
-    # If TPU is not available, this will fall back to normal Estimator on CPU
-    # or GPU.
-    estimator = tf.compat.v1.estimator.tpu.TPUEstimator(use_tpu=FLAGS.use_tpu,
-                                                        model_fn=model_fn,
-                                                        config=run_config,
-                                                        train_batch_size=FLAGS.train_batch_size,
-                                                        predict_batch_size=FLAGS.predict_batch_size)
-
     if FLAGS.do_train:
-        train_input_fn = input_fn_builder(input_file=TRAIN_TF_RECORD,
-                                          seq_length=FLAGS.max_seq_length,
-                                          is_training=True,
-                                          drop_remainder=True)
-        estimator.train(input_fn=train_input_fn, max_steps=feature_metadata['num_train_steps'])
+        dataset = get_dataset(TRAIN_TF_RECORD)
+        create_and_fit_model(dataset)
 
     if FLAGS.do_predict:
         (eval_examples, eval_features) = _process_eval_features_if_necessary()
