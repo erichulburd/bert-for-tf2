@@ -1082,23 +1082,13 @@ def create_model(input_ids, segment_ids, input_mask, adapter_size, is_training):
 
     final_hidden = bert([input_ids, segment_ids], mask=input_mask, training=is_training)
 
-    print('input_ids', input_ids)
-    print('segment_ids', segment_ids)
-    print('final_hidden', final_hidden)
-    # model = keras.Model(inputs=[input_ids, segment_ids], outputs=final_hidden)
-    # model.build(input_shape=[(None, FLAGS.max_seq_length), (None, FLAGS.max_seq_lenth)])
-    skipped_weight_value_tuples = load_stock_weights(bert, INIT_CHECKPOINT)
-
-    print('=== skipped_weight_value_tuples ===')
-    for (param, value) in skipped_weight_value_tuples:
-        print('\t%s = %d' % (param, value))
-
     final_hidden_shape = get_shape_list(final_hidden, expected_rank=3)
     batch_size = final_hidden_shape[0]
     seq_length = final_hidden_shape[1]
     hidden_size = final_hidden_shape[2]
 
     if FLAGS.layer_config:
+        """
         config = None
         if FLAGS.do_train:
             config = _initialize_layer_config(FLAGS.layer_config, bert_config)
@@ -1122,6 +1112,8 @@ def create_model(input_ids, segment_ids, input_mask, adapter_size, is_training):
                                                                     segment_ids=segment_ids)
         else:
             raise ValueError('Unexected model %s' % config.model)
+        """
+        raise ValueError('Layer config not currently supported.')
     else:
         output_weights = tf.compat.v1.get_variable(
             "cls/squad/output_weights", [2, hidden_size],
@@ -1141,119 +1133,130 @@ def create_model(input_ids, segment_ids, input_mask, adapter_size, is_training):
 
         (start_logits, end_logits) = (unstacked_logits[0], unstacked_logits[1])
 
-    return (start_logits, end_logits)
+    outputs = {'start_logits': start_logits, 'end_logits': end_logits}
+
+    model = keras.Model(inputs=[input_ids, segment_ids], outputs=outputs)
+    model.build(input_shape=[(None, FLAGS.max_seq_length), (None, FLAGS.max_seq_lenth)])
+
+    skipped_weight_value_tuples = load_stock_weights(bert, INIT_CHECKPOINT)
+    print('=== skipped_weight_value_tuples ===')
+    for (param, value) in skipped_weight_value_tuples:
+        print('\t%s = %d' % (param, value))
+
+    if FLAGS.adapter_size is not None:
+        freeze_bert_layers(bert)
+
+    # TODO
+    optimizer = keras.optimizers.Adam()
+    metrics = [keras.metrics.SparseCategoricalAccuracy(name="acc")]
+
+    model.compile(optimizer=optimizer, loss=TotalPositionLoss, metrics=metrics)
+
+    model.summary()
+
+    return model
 
 
-def model_fn_builder(bert_config, init_checkpoint, learning_rate, num_train_steps, num_warmup_steps,
-                     use_tpu, use_one_hot_embeddings):
-    """Returns `model_fn` closure for TPUEstimator."""
+def compute_loss(logits, positions):
+    one_hot_positions = tf.one_hot(positions, depth=seq_length, dtype=tf.float32)
+    log_probs = tf.nn.log_softmax(logits, axis=-1)
+    loss = -tf.reduce_mean(
+        input_tensor=tf.reduce_sum(input_tensor=one_hot_positions * log_probs, axis=-1))
+    return loss
 
-    def model_fn(features, labels, mode, params):  # pylint: disable=unused-argument
-        """The `model_fn` for TPUEstimator."""
 
-        tf.compat.v1.logging.info("*** Features ***")
-        for name in sorted(features.keys()):
-            tf.compat.v1.logging.info("  name = %s, shape = %s" % (name, features[name].shape))
+class TotalPositionLoss(tf.losses.Loss):
+    def call(self, features, logits):
+        start_positions = features["start_positions"]
+        end_positions = features["end_positions"]
+        start_logits = logits['start_logits']
+        end_logits = logits['end_logits']
 
-        unique_ids = features["unique_ids"]
-        input_ids = features["input_ids"]
-        input_mask = features["input_mask"]
-        segment_ids = features["segment_ids"]
+        start_loss = compute_loss(start_logits, start_positions)
+        end_loss = compute_loss(end_logits, end_positions)
 
-        (start_logits, end_logits) = create_model(input_ids=input_ids,
-                                                  segment_ids=segment_ids,
-                                                  input_mask=input_mask,
-                                                  adapter_size=FLAGS.adapter_size,
-                                                  is_training=(mode == tf.estimator.ModeKeys.TRAIN))
+        return (start_loss + end_loss) / 2.0
 
-        tvars = tf.compat.v1.trainable_variables()
 
-        scaffold_fn = None
+def create_and_fit_model(data, labels, mode, params):  # pylint: disable=unused-argument
+    unique_ids = keras.layers.Input(shape=(FLAGS.max_seq_len, ), dtype='int32', name="unique_ids")
+    input_ids = keras.layers.Input(shape=(FLAGS.max_seq_len, ), dtype='int32', name="input_ids")
+    input_mask = keras.layers.Input(shape=(FLAGS.max_seq_len, ), dtype='int32', name="input_mask")
+    segment_ids = keras.layers.Input(shape=(FLAGS.max_seq_len, ), dtype='int32', name="segment_ids")
 
-        tf.compat.v1.logging.info("**** Trainable Variables ****")
-        for var in tvars:
-            init_string = ""
-            tf.compat.v1.logging.info("  name = %s, shape = %s%s", var.name, var.shape, init_string)
+    model = create_model(input_ids=input_ids,
+                         segment_ids=segment_ids,
+                         input_mask=input_mask,
+                         adapter_size=FLAGS.adapter_size,
+                         is_training=(mode == tf.estimator.ModeKeys.TRAIN))
 
-        output_spec = None
+    tensorboard_callback = keras.callbacks.TensorBoard(log_dir=OUTPUT_DIR)
 
-        seq_length = get_shape_list(input_ids)[1]
+    model.fit(
+        # TODO
+        x=data.train_x,
+        y=data.train_y,
+        validation_split=0.1,
+        batch_size=FLAGS.train_batch_size,
+        shuffle=True,
+        epochs=FLAGS.num_train_epochs,
+        # TODO
+        callbacks=[
+            create_learning_rate_scheduler(max_learn_rate=1e-5,
+                                           end_learn_rate=1e-7,
+                                           warmup_epoch_count=20,
+                                           total_epoch_count=total_epoch_count),
+            keras.callbacks.EarlyStopping(patience=20, restore_best_weights=True),
+            tensorboard_callback
+        ])
+    model.save_weights(OUTPUT_DIR, overwrite=True)
 
-        def compute_loss(logits, positions):
-            one_hot_positions = tf.one_hot(positions, depth=seq_length, dtype=tf.float32)
-            log_probs = tf.nn.log_softmax(logits, axis=-1)
-            loss = -tf.reduce_mean(
-                input_tensor=tf.reduce_sum(input_tensor=one_hot_positions * log_probs, axis=-1))
-            return loss
+    if mode == tf.estimator.ModeKeys.TRAIN:
+        write_summaries('train')
 
-        if mode != tf.estimator.ModeKeys.PREDICT:
-            start_positions = features["start_positions"]
-            end_positions = features["end_positions"]
+        # NOTE: We are using BERT's AdamWeightDecayOptimizer. We may want to reconsider
+        # this if we are not able to effectively train.
+        train_op = create_optimizer(total_loss, learning_rate, num_train_steps, num_warmup_steps,
+                                    use_tpu)
 
-            start_loss = compute_loss(start_logits, start_positions)
-            end_loss = compute_loss(end_logits, end_positions)
+        summaries = tf.estimator.SummarySaverHook(
+            save_steps=100,
+            output_dir=OUTPUT_DIR,
+            summary_op=tf.compat.v1.summary.merge_all(),
+        )
+        output_spec = tf.compat.v1.estimator.tpu.TPUEstimatorSpec(mode=mode,
+                                                                  loss=total_loss,
+                                                                  train_op=train_op,
+                                                                  training_hooks=[summaries],
+                                                                  scaffold_fn=scaffold_fn)
+    elif mode == tf.estimator.ModeKeys.EVAL:
+        write_summaries('eval')
+        summaries = tf.estimator.SummarySaverHook(
+            save_steps=1,
+            output_dir=OUTPUT_DIR,
+            summary_op=tf.compat.v1.summary.merge_all(),
+        )
+        predictions = {}
 
-            total_loss = (start_loss + end_loss) / 2.0
+        # inference_model = initialize_inference_model(hypes)
+        output_spec = tf.estimator.EstimatorSpec(mode,
+                                                 loss=total_loss,
+                                                 evaluation_hooks=[summaries],
+                                                 predictions=predictions)
 
-            start_accuracy = compute_batch_accuracy(start_logits, start_positions)
-            end_accuracy = compute_batch_accuracy(end_logits, end_positions)
+    elif mode == tf.estimator.ModeKeys.PREDICT:
+        predictions = {
+            "unique_ids": unique_ids,
+            "start_logits": start_logits,
+            "end_logits": end_logits,
+        }
+        output_spec = tf.compat.v1.estimator.tpu.TPUEstimatorSpec(mode=mode,
+                                                                  predictions=predictions,
+                                                                  scaffold_fn=scaffold_fn)
+    else:
+        raise ValueError("Only TRAIN and PREDICT modes are supported: %s" % (mode))
 
-        def write_summaries(family):
-            tf.compat.v1.summary.scalar("start_loss", start_loss, family=family)
-            tf.compat.v1.summary.scalar("end_loss", end_loss, family=family)
-            tf.compat.v1.summary.scalar("total_loss", total_loss, family=family)
-
-            tf.compat.v1.summary.scalar("start_accuracy", start_accuracy, family=family)
-            tf.compat.v1.summary.scalar("end_accuracy", end_accuracy, family=family)
-
-        if mode == tf.estimator.ModeKeys.TRAIN:
-            write_summaries('train')
-
-            # NOTE: We are using BERT's AdamWeightDecayOptimizer. We may want to reconsider
-            # this if we are not able to effectively train.
-            train_op = create_optimizer(total_loss, learning_rate, num_train_steps,
-                                        num_warmup_steps, use_tpu)
-
-            summaries = tf.estimator.SummarySaverHook(
-                save_steps=100,
-                output_dir=OUTPUT_DIR,
-                summary_op=tf.compat.v1.summary.merge_all(),
-            )
-            output_spec = tf.compat.v1.estimator.tpu.TPUEstimatorSpec(mode=mode,
-                                                                      loss=total_loss,
-                                                                      train_op=train_op,
-                                                                      training_hooks=[summaries],
-                                                                      scaffold_fn=scaffold_fn)
-        elif mode == tf.estimator.ModeKeys.EVAL:
-            write_summaries('eval')
-            summaries = tf.estimator.SummarySaverHook(
-                save_steps=1,
-                output_dir=OUTPUT_DIR,
-                summary_op=tf.compat.v1.summary.merge_all(),
-            )
-            predictions = {}
-
-            # inference_model = initialize_inference_model(hypes)
-            output_spec = tf.estimator.EstimatorSpec(mode,
-                                                     loss=total_loss,
-                                                     evaluation_hooks=[summaries],
-                                                     predictions=predictions)
-
-        elif mode == tf.estimator.ModeKeys.PREDICT:
-            predictions = {
-                "unique_ids": unique_ids,
-                "start_logits": start_logits,
-                "end_logits": end_logits,
-            }
-            output_spec = tf.compat.v1.estimator.tpu.TPUEstimatorSpec(mode=mode,
-                                                                      predictions=predictions,
-                                                                      scaffold_fn=scaffold_fn)
-        else:
-            raise ValueError("Only TRAIN and PREDICT modes are supported: %s" % (mode))
-
-        return output_spec
-
-    return model_fn
+    return output_spec
 
 
 def main(_):
